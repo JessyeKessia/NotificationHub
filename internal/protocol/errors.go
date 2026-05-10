@@ -6,8 +6,8 @@ package protocol
 
 // cria a mensagem de confirmação de operação, como publicação ou assinatura,
 // contendo o status da operação e o identificador da requisição para rastreamento
-func NewAck(requestID string) Envelope {
-	return Envelope{
+func NewAck(requestID string) Envelop {
+	return Envelop{
 		Type:      "ack",
 		RequestID: requestID,
 	}
@@ -15,8 +15,8 @@ func NewAck(requestID string) Envelope {
 
 // função que cria um envelope de erro com o tipo "error",
 // contendo o identificador da requisição e a mensagem de erro fornecida
-func NewError(requestID, message string) Envelope {
-	return Envelope{
+func NewError(requestID, message string) Envelop {
+	return Envelop{
 		Type:      "error",
 		RequestID: requestID,
 		Error:     message,

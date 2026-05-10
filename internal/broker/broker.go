@@ -83,7 +83,7 @@ func (b *Broker) Subscribe(client *Client, topicName string) {
 		topic := &Topic{
 			Name:        topicName,
 			Subscribers: make(map[*Client]bool),
-			Queue:       make(chan protocol.Envelope, 100),
+			Queue:       make(chan protocol.Envelop, 100),
 		}
 
 		topic.StartWorker()
@@ -99,7 +99,7 @@ func (b *Broker) Subscribe(client *Client, topicName string) {
 
 	client.Topics[topicName] = true
 
-	client.SendJSON(protocol.Envelope{
+	client.SendJSON(protocol.Envelop{
 		Type:  "ack",
 		Topic: topicName,
 	})
@@ -131,14 +131,14 @@ func (b *Broker) Unsubscribe(client *Client, topicName string) {
 		log.Println("tópico removido:", topicName)
 	}
 
-	client.SendJSON(protocol.Envelope{
+	client.SendJSON(protocol.Envelop{
 		Type:  "ack",
 		Topic: topicName,
 	})
 }
 
 // publicação em tópico
-func (b *Broker) Publish(env protocol.Envelope) {
+func (b *Broker) Publish(env protocol.Envelop) {
 
 	b.Mutex.RLock()
 	defer b.Mutex.RUnlock()
