@@ -68,7 +68,7 @@ func (c *Client) ReadPump() {
 			continue
 		}
 
-		// valida mensagem de acordo com as regras de validação definidasd
+		// valida mensagem de acordo com as regras de validação definidas
 		err = protocol.ValidateEnvelop(env)
 
 		// erro de validacao
@@ -93,11 +93,6 @@ func (c *Client) ReadPump() {
 
 		case "publish":
 
-			log.Println(
-				"mensagem publicada no tópico:",
-				env.Topic,
-			)
-
 			log.Println("payload:", env.Payload)
 
 			ack := protocol.NewAck(env.RequestID)
@@ -106,37 +101,42 @@ func (c *Client) ReadPump() {
 
 			c.Send <- data
 
+			log.Println(
+				"mensagem publicada no tópico:",
+				env.Topic,
+			)
+
 		case "subscribe":
 
 			// adiciona tópico ao cliente
 			c.Topics[env.Topic] = true
+
+			ack := protocol.NewAck(env.RequestID)
+
+			data, _ := json.Marshal(ack)
+
+			c.Send <- data
 
 			log.Println(
 				"cliente inscrito no tópico:",
 				env.Topic,
 			)
 
-			ack := protocol.NewAck(env.RequestID)
-
-			data, _ := json.Marshal(ack)
-
-			c.Send <- data
-
 		case "unsubscribe":
 
 			// remove inscrição
 			delete(c.Topics, env.Topic)
 
-			log.Println(
-				"cliente removido do tópico:",
-				env.Topic,
-			)
-
 			ack := protocol.NewAck(env.RequestID)
 
 			data, _ := json.Marshal(ack)
 
 			c.Send <- data
+
+			log.Println(
+				"cliente removido do tópico:",
+				env.Topic,
+			)
 
 		case "ping":
 
