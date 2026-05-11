@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
 
   broker1:
@@ -9,6 +7,11 @@ services:
       - "8081:8080"
     environment:
       - BROKER_ID=broker1
+      - PEER=ws://broker2:8080/federation
+    networks:
+      - brokers-net
+    depends_on:
+      - broker2
 
   broker2:
     build: .
@@ -17,6 +20,11 @@ services:
       - "8082:8080"
     environment:
       - BROKER_ID=broker2
+      - PEER=ws://broker3:8080/federation
+    networks:
+      - brokers-net
+    depends_on:
+      - broker3
 
   broker3:
     build: .
@@ -25,3 +33,10 @@ services:
       - "8083:8080"
     environment:
       - BROKER_ID=broker3
+      - PEER=ws://broker1:8080/federation
+    networks:
+      - brokers-net
+
+networks:
+  brokers-net:
+    driver: bridge

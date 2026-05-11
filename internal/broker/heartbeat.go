@@ -2,7 +2,6 @@ package broker
 
 import (
 	"time"
-
 	"github.com/gorilla/websocket"
 )
 
@@ -12,20 +11,17 @@ func (b *Broker) StartHeartbeat() {
 
 	for range ticker.C {
 
-		b.Mutex.RLock()
+		b.Mutex.Lock()
 
-		for _, client := range b.Clients {
+		for id, client := range b.Clients {
 
-			// verifica timeout
 			if time.Since(client.LastPong) > 60*time.Second {
 
 				client.Conn.Close()
-				delete(b.Clients, client.ID)
-
+				delete(b.Clients, id)
 				continue
 			}
 
-			// envia ping websocket
 			err := client.Conn.WriteMessage(
 				websocket.PingMessage,
 				[]byte("ping"),
@@ -33,10 +29,10 @@ func (b *Broker) StartHeartbeat() {
 
 			if err != nil {
 				client.Conn.Close()
-				delete(b.Clients, client.ID)
+				delete(b.Clients, id)
 			}
 		}
 
-		b.Mutex.RUnlock()
+		b.Mutex.Unlock()
 	}
 }

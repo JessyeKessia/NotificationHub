@@ -3,6 +3,7 @@ package broker
 import (
 	"encoding/json"
 	"notificationhub/internal/protocol"
+	"log"
 )
 
 // representa um tópico do broker
@@ -36,22 +37,41 @@ func NewTopic(name string, b *Broker) *Topic {
 }
 
 func (t *Topic) dispatch() {
+
 	for msg := range t.Queue {
-		if len(t.Subscribers) == 0 {
+
+		t.Broker.Mutex.RLock()
+
+		subs := make([]*Client, 0, len(t.Subscribers))
+		for c := range t.Subscribers {
+			subs = append(subs, c)
+		}
+
+		t.Broker.Mutex.RUnlock()
+
+		// AVISO QUANDO NÃO TEM NINGUÉM INSCRITO PARA RECEBER A MENSAGEM
+		if len(subs) == 0 {
+			log.Printf("tópico '%s' sem subscribers: mensagem descartada", t.Name)
 			continue
 		}
 
 		data, _ := json.Marshal(msg)
-		for c := range t.Subscribers {
+
+		for _, c := range subs {
 			select {
 			case c.Send <- data:
 			default:
+				log.Printf("⚠️ cliente %s com buffer cheio, mensagem descartada", c.ID)
 			}
 		}
 	}
 }
 
 func (t *Topic) checkEmpty() {
+
+	t.Broker.Mutex.Lock()
+	defer t.Broker.Mutex.Unlock()
+
 	if len(t.Subscribers) == 0 {
 		delete(t.Broker.Topics, t.Name)
 	}
