@@ -2,8 +2,6 @@ package broker
 
 import (
 	"encoding/json"
-	"log"
-
 	"notificationhub/internal/protocol"
 )
 
@@ -22,29 +20,39 @@ type Topic struct {
 
 	// fila com buffer com as mensagens a serem distribuídas para os inscritos
 	Queue chan protocol.Envelop
+
+	Broker *Broker
 }
 
-// worker responsável pela distribuição de mensagens
-func (t *Topic) StartWorker() {
+func NewTopic(name string, b *Broker) *Topic {
+	t := &Topic{
+		Name: name,
+		Subscribers: make(map[*Client]bool),
+		Queue: make(chan protocol.Envelop, 100),
+		Broker: b,
+	}
+	go t.dispatch()
+	return t
+}
 
-	go func() {
+func (t *Topic) dispatch() {
+	for msg := range t.Queue {
+		if len(t.Subscribers) == 0 {
+			continue
+		}
 
-		for message := range t.Queue {
-
-			data, err := json.Marshal(message)
-
-			if err != nil {
-				continue
-			}
-
-			for client := range t.Subscribers {
-				select {
-					case client.Send <- data:
-					default:
-						log.Println("fila cheia para cliente", client.ID)
-						
-					}
+		data, _ := json.Marshal(msg)
+		for c := range t.Subscribers {
+			select {
+			case c.Send <- data:
+			default:
 			}
 		}
-	}()
+	}
+}
+
+func (t *Topic) checkEmpty() {
+	if len(t.Subscribers) == 0 {
+		delete(t.Broker.Topics, t.Name)
+	}
 }
