@@ -22,6 +22,7 @@ import(
 	RequestID string `json:"request_id,omitempty"`
 	Topic string `json:"topic,omitempty"`
 	Payload interface{} `json:"payload,omitempty"`
+	Error     string      `json:"error,omitempty"`
 }
 
 type brokerConnection struct {
@@ -280,7 +281,7 @@ func (bc *brokerConnection) writeJSON(v interface{}) error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
-	if err := bc.conn.WriteJSON(env); err != nil {
+	if err := bc.conn.WriteJSON(v); err != nil {
 		return fmt.Errorf("erro ao enviar mensagem para broker %s: %w", bc.url, err)
 	}
 
