@@ -7,6 +7,14 @@ import (
 	"encoding/json"
 )
 
+type PublishStatus string
+
+const(
+	PublishStatusPublished             PublishStatus = "published"
+	PublishStatusDiscardedNoSubscribers PublishStatus = "discarded_no_subscribers"
+	PublishStatusQueueFull             PublishStatus = "topic_queue_full"
+)
+
 type Broker struct {
 	Topics  map[string]*Topic
 	Clients map[string]*Client
@@ -28,23 +36,16 @@ func (b *Broker) Publish(
 	// origin é o endereço do broker que originou a mensagem, 
 	// usado para evitar loops de replicação
 	origin string,
-) {
-
+) PublishStatus {
 	b.Mutex.RLock()
-
 	t, exists := b.Topics[topic]
 
-	b.Mutex.RUnlock()
-
-	if !exists {
-
-		log.Println("Tópico não existe: mensagem descartada do", topic)
-
-		return
+	if !exists || len(t.Subscribers) == 0 {
+		b.Mutex.RUnlock()
+		log.Println("Tópico '%s' não existe ou não tem inscritos: mensagem descartada do", topic)
+		return PublishStatusDiscardedNoSubscribers
 	}
 
-	log.Printf("Publicando mensagem no tópico: %s para %d subscribers", topic, len(t.Subscribers))
-	
 	envelop := protocol.Envelop{
 		Type:    "message",
 		Topic:   topic,
@@ -54,14 +55,26 @@ func (b *Broker) Publish(
 	// envia para a fila do tópico
 	select {
 	case t.Queue <- envelop:
-		log.Printf("Mensagem enfileirada com sucesso para o tópico: %s", topic)
+		b.Mutex.RUnlock()
+		log.Printf("[PUBSUB] mensagem publicada no tópico '%s' para %d subscriber(s)", topic, len(t.Subscribers))
 	default:
-		log.Println("Fila cheia: mensagem descartada do", topic)
+		b.Mutex.RUnlock()
+		log.Printf("[BACKPRESSURE] fila cheia no tópico '%s': mensagem rejeitada", topic)
+		return PublishStatusQueueFull
 	}
 
+	if origin != "" {
+		log.Printf("[FEDERATION] mensagem recebida de peer origem=%s", origin)
+	}
+
+	if len(b.Peers) > 0 {
 	// replica para outros brokers
 	data, _ := json.Marshal(envelop)
 	b.Forward(topic, data, origin)
+
+	
+	}
+	return PublishStatusPublished
 }
 func (b *Broker) Subscribe(
 	topic string,
@@ -102,7 +115,11 @@ func (b *Broker) Unsubscribe(
 
 	delete(t.Subscribers, client)
 
-	t.checkEmpty()
+	log.Printf("[UNSUBSCRIBE] cliente %s removido do tópico '%s'", client.ID, topic)
 
-	log.Println("cliente desinscrito do tópico:", topic)
+	if len(t.Subscribers) == 0 {
+		delete(b.Topics, topic)
+		close(t.Queue)
+
+		log.Printf("[TOPIC] tópico removido por falta de subscribers: %s", topic) }
 }
