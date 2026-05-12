@@ -133,14 +133,17 @@ func (c *Client) readPump(b *Broker) {
 
 func (c *Client) writePump() {
 	ticker := time.NewTicker(30 * time.Second)
-	defer func(){
+
+	defer func() {
 		ticker.Stop()
 		c.Conn.Close()
 	}()
 
 	for {
 		select {
+
 		case msg, ok := <-c.Send:
+
 			if !ok {
 				log.Println("[CLIENT] canal de envio fechado:", c.ID)
 				return
@@ -152,9 +155,11 @@ func (c *Client) writePump() {
 			}
 
 		case <-ticker.C:
+
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				log.Println("[CLIENT] erro ao enviar ping:", err)
 				return
+			}
 		}
 	}
 }
