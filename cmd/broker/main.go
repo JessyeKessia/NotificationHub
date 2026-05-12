@@ -1,41 +1,48 @@
 package main
 
 import (
-	"net/http"
-	"notificationhub/internal/broker"
-	"os"
 	"log"
+	"net/http"
+	"os"
 	"time"
+
+	"notificationhub/internal/broker"
 )
 
 func main() {
 	b := broker.NewBroker()
 
+	brokerID := os.Getenv("BROKER_ID")
+	if brokerID == "" {
+		brokerID = "broker-local"
+	}
+
+	peer := os.Getenv("PEER")
+
 	http.HandleFunc("/notificationhub", b.ServeWS)
 	http.HandleFunc("/federation", b.ServePeer)
 
-	// inicia o servidor HTTP em background
-	go http.ListenAndServe(":8080", nil)
+	log.Printf("[BROKER] id=%s iniciando na porta interna 8080", brokerID)
+	log.Printf("[BROKER] endpoint clientes: /notificationhub")
+	log.Printf("[BROKER] endpoint federação: /federation")
 
-	// aguarda o servidor iniciar completamente
-	time.Sleep(3 * time.Second)
+	go func() {
+		if err := http.ListenAndServe(":8080", nil); err != nil {
+			log.Fatal("[BROKER] erro ao iniciar servidor:", err)
+		}
+	}()
 
-	// conecta peers
-	peer := os.Getenv("PEER")
+	// Espera curta para o servidor local subir antes de tentar conectar ao peer.
+	time.Sleep(2 * time.Second)
 
 	if peer != "" {
+		log.Printf("[FEDERATION] %s tentando conectar ao peer %s", brokerID, peer)
 
 		err := b.ConnectPeer(peer)
-
 		if err != nil {
-
-			log.Println(
-				"erro ao conectar peer:",
-				err,
-			)
+			log.Printf("[FEDERATION] %s não conseguiu conectar ao peer %s: %v", brokerID, peer, err)
 		}
 	}
 
-	// mantém o programa rodando
 	select {}
 }
