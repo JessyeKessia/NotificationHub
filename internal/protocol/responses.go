@@ -8,7 +8,7 @@ package protocol
 // contendo o status da operação e o identificador da requisição para rastreamento
 func NewAck(requestID string) Envelop {
 	return Envelop{
-		Type:      "Ack",
+		Type:      "ack",
 		RequestID: requestID,
 	}
 }
