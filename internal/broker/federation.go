@@ -84,6 +84,7 @@ func (b *Broker) listenPeer(
 		b.Publish(
 			env.Topic,
 			env.Payload,
+			nil,
 			peer.Addr,
 		)
 	}
