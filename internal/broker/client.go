@@ -2,10 +2,10 @@ package broker
 
 import (
 	"github.com/gorilla/websocket"
-	"encoding/json"
+	"time"
 	"log"
 	"notificationhub/internal/protocol"
-
+	"encoding/json"
 )
 
 // representa um cliente conectado ao broker
@@ -20,138 +20,121 @@ type Client struct {
 	// fila assíncrona de saída
 	Send chan []byte
 
-	// conjunto de topicos aos quais o cliente está inscrito
-	Topics map[string]bool
-
-	// referência ao broker para permitir interação com o broker
-	Broker *Broker
-
 	// sinalizador de fechamento do cliente
-	Close chan struct{}
+	LastPong time.Time
 }
-func (c *Client) ReadPump() {
 
-	// fecha conexão ao encerrar
+func (c *Client) readPump(b *Broker) {
+
 	defer c.Conn.Close()
+
+	c.Conn.SetPongHandler(func(string) error {
+
+		c.LastPong = time.Now()
+
+		return nil
+	})
 
 	for {
 
-		// le as mensagens websocket
 		_, message, err := c.Conn.ReadMessage()
 
-		// cliente desconectou
 		if err != nil {
-			log.Println("erro ao ler mensagem:", err)
+			log.Println("read error:", err)
 			break
 		}
 
-		// estrutura para armazenar a mensagem decodificada
 		var env protocol.Envelop
 
-		// converte json → struct go (objeto go) 
 		err = json.Unmarshal(message, &env)
 
-		// se tiver erro na conversão, manda mensagem de erro
 		if err != nil {
 
-			log.Println("json inválido:", err)
-
-			// envia erro padronizado
-			errorResponse := protocol.NewError("", "payload inválido", )
-
-			// converte struct go (objeto go) → json para enviar ao cliente
-			data, _ := json.Marshal(errorResponse)
-
-			// envia
-			c.Send <- data
-
-			continue
-		}
-
-		// valida mensagem de acordo com as regras de validação definidas
-		err = protocol.ValidateEnvelop(env)
-
-		// erro de validacao
-		if err != nil {
-
-			log.Println("erro de validação:", err)
-
-			errorResponse := protocol.NewError(
+			c.SendError(
+				"invalid_json",
 				env.RequestID,
-				err.Error(),
 			)
-
-			data, _ := json.Marshal(errorResponse)
-
-			c.Send <- data
 
 			continue
 		}
 
-		// processa tipos do protocolo
 		switch env.Type {
-
-		case "publish":
-
-			log.Println("payload:", env.Payload)
-
-			ack := protocol.NewAck(env.RequestID)
-
-			data, _ := json.Marshal(ack)
-
-			c.Send <- data
-
-			log.Println(
-				"mensagem publicada no tópico:",
-				env.Topic,
-			)
 
 		case "subscribe":
 
-			// adiciona tópico ao cliente
-			c.Topics[env.Topic] = true
+			b.Subscribe(env.Topic, c)
 
-			ack := protocol.NewAck(env.RequestID)
-
-			data, _ := json.Marshal(ack)
-
-			c.Send <- data
-
-			log.Println(
-				"cliente inscrito no tópico:",
-				env.Topic,
+			c.SendAck(
+				"subscribed",
+				env.RequestID,
 			)
 
 		case "unsubscribe":
 
-			// remove inscrição
-			delete(c.Topics, env.Topic)
+			b.Unsubscribe(env.Topic, c)
 
-			ack := protocol.NewAck(env.RequestID)
-
-			data, _ := json.Marshal(ack)
-
-			c.Send <- data
-
-			log.Println(
-				"cliente removido do tópico:",
-				env.Topic,
-			)
-
-		case "ping":
-
-			log.Println("ping recebido")
-
-		default:
-
-			errorResponse := protocol.NewError(
+			c.SendAck(
+				"unsubscribed",
 				env.RequestID,
-				"tipo de mensagem desconhecido",
 			)
 
-			data, _ := json.Marshal(errorResponse)
+		case "publish":
 
-			c.Send <- data
+			b.Publish(
+				env.Topic,
+				env.Payload,
+				"",
+			)
+
+			c.SendAck(
+				"published",
+				env.RequestID,
+			)
 		}
 	}
+}
+
+func (c *Client) writePump() {
+	ticker := time.NewTicker(30 * time.Second)
+
+	for {
+		select {
+		case msg := <-c.Send:
+			c.Conn.WriteMessage(websocket.TextMessage, msg)
+		case <-ticker.C:
+			c.Conn.WriteMessage(websocket.PingMessage, nil)
+		}
+	}
+}
+
+func (c *Client) SendAck(
+	message string,
+	requestID string,
+) {
+
+	response := protocol.Envelop{
+		Type:      "ack",
+		Payload:   message,
+		RequestID: requestID,
+	}
+
+	data, _ := json.Marshal(response)
+
+	c.Send <- data
+}
+
+func (c *Client) SendError(
+	errMsg string,
+	requestID string,
+) {
+
+	response := protocol.Envelop{
+		Type:      "error",
+		Error:     errMsg,
+		RequestID: requestID,
+	}
+
+	data, _ := json.Marshal(response)
+
+	c.Send <- data
 }
