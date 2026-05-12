@@ -13,6 +13,7 @@ const(
 	PublishStatusPublished             PublishStatus = "published"
 	PublishStatusDiscardedNoSubscribers PublishStatus = "discarded_no_subscribers"
 	PublishStatusQueueFull             PublishStatus = "topic_queue_full"
+	PublishStatusNotSubscribed         PublishStatus = "not_subscribed"
 )
 
 type Broker struct {
@@ -33,6 +34,7 @@ func NewBroker() *Broker {
 func (b *Broker) Publish(
 	topic string,
 	payload interface{},
+	publisher *Client,
 	// origin é o endereço do broker que originou a mensagem, 
 	// usado para evitar loops de replicação
 	origin string,
@@ -40,9 +42,22 @@ func (b *Broker) Publish(
 	b.Mutex.RLock()
 	t, exists := b.Topics[topic]
 
-	if !exists || len(t.Subscribers) == 0 {
+	if !exists {
 		b.Mutex.RUnlock()
-		log.Println("Tópico '%s' não existe ou não tem inscritos: mensagem descartada do", topic)
+		log.Printf("[PUBSUB] tópico '%s' não existe: mensagem rejeitada", topic)
+		return PublishStatusDiscardedNoSubscribers
+	}
+
+	// Valida se o cliente que está publicando está inscrito no tópico
+	if publisher != nil && !t.Subscribers[publisher] {
+		b.Mutex.RUnlock()
+		log.Printf("[PUBSUB] cliente %s não está inscrito no tópico '%s': publicação rejeitada", publisher.ID, topic)
+		return PublishStatusNotSubscribed
+	}
+
+	if len(t.Subscribers) == 0 {
+		b.Mutex.RUnlock()
+		log.Printf("[PUBSUB] tópico '%s' não tem inscritos: mensagem descartada", topic)
 		return PublishStatusDiscardedNoSubscribers
 	}
 

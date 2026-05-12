@@ -104,6 +104,7 @@ func (c *Client) readPump(b *Broker) {
 			status := b.Publish(
 				env.Topic,
 				env.Payload,
+				c,
 				"",
 			)
 
@@ -116,6 +117,8 @@ func (c *Client) readPump(b *Broker) {
 				)
 			case PublishStatusQueueFull:
 				c.SendError("topic_queue_full", env.RequestID)
+			case PublishStatusNotSubscribed:
+				c.SendError("not_subscribed", env.RequestID)
 			case PublishStatusDiscardedNoSubscribers:
 				c.SendError("discarded_no_subscribers", env.RequestID)
 			default: 
