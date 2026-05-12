@@ -19,11 +19,16 @@ func main() {
 
 	defer client.Close()
 
+	log.Println("[TESTE] Publicando em tópico sem subscribers")
+
 	err = client.Publish("topico_sem_assinantes", map[string]any{
 		"message": "essa mensagem deve ser descartada",
+		"time":    time.Now().Format(time.RFC3339),
 	})
 
 	if err != nil {
 		log.Println("[PUBLISHER-NO-SUBSCRIBER] erro:", err)
 	}
+
+	time.Sleep(2 * time.Second)
 }
