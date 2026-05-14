@@ -2,9 +2,8 @@ package broker
 
 import (
 	"encoding/json"
-	"log"
-
 	"notificationhub/internal/protocol"
+	"log"
 )
 
 // representa um tópico do broker
@@ -22,29 +21,69 @@ type Topic struct {
 
 	// fila com buffer com as mensagens a serem distribuídas para os inscritos
 	Queue chan protocol.Envelop
+
+	Broker *Broker
 }
 
-// worker responsável pela distribuição de mensagens
-func (t *Topic) StartWorker() {
+func NewTopic(name string, b *Broker) *Topic {
+	t := &Topic{
+		Name: name,
+		Subscribers: make(map[*Client]bool),
+		Queue: make(chan protocol.Envelop, 100),
+		Broker: b,
+	}
+	go t.dispatch()
+	return t
+}
 
-	go func() {
+func (t *Topic) dispatch() {
 
-		for message := range t.Queue {
+	for msg := range t.Queue {
 
-			data, err := json.Marshal(message)
+		t.Broker.Mutex.RLock()
 
-			if err != nil {
-				continue
-			}
+		subs := make([]*Client, 0, len(t.Subscribers))
+		for c := range t.Subscribers {
+			subs = append(subs, c)
+		}
 
-			for client := range t.Subscribers {
-				select {
-					case client.Send <- data:
-					default:
-						log.Println("fila cheia para cliente", client.ID)
-						
-					}
+		t.Broker.Mutex.RUnlock()
+
+		// AVISO QUANDO NÃO TEM NINGUÉM INSCRITO PARA RECEBER A MENSAGEM
+		if len(subs) == 0 {
+			log.Printf("[DISPATCH] tópico '%s' sem subscribers: mensagem descartada", t.Name)
+			continue
+		}
+
+		data, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("[DISPATCH] erro ao serializar mensagem do tópico '%s': %v", t.Name, err)
+			continue
+		}
+
+		for _, c := range subs {
+			select {
+			case c.Send <- data:
+				log.Printf("[DISPATCH] mensagem do tópico '%s' enviada para cliente %s", t.Name, c.ID)
+				// caso o buffer do cliente esteja cheio, descartamos a mensagem para ele e seguimos para os próximos
+				// isso é uma forma simples de lidar com clientes lentos sem bloquear o broker
+				// ou criar filas ilimitadas
+				// em um cenário real, poderíamos implementar estratégias mais sofisticadas de backpressure
+			default:
+				log.Printf("[DISPATCH] cliente %s com buffer cheio, mensagem descartada", c.ID)
 			}
 		}
-	}()
+	}
+
+	log.Printf("[TOPIC] worker do tópico '%s' encerrado", t.Name)
+}
+
+func (t *Topic) checkEmpty() {
+
+	t.Broker.Mutex.Lock()
+	defer t.Broker.Mutex.Unlock()
+
+	if len(t.Subscribers) == 0 {
+		delete(t.Broker.Topics, t.Name)
+	}
 }

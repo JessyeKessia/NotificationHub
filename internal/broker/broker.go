@@ -1,162 +1,140 @@
 package broker
 
 import (
+	"notificationhub/internal/protocol"
 	"log"
 	"sync"
-
-	"notificationhub/internal/protocol"
+	"encoding/json"
 )
 
-// broker principal
-// controla:
-// - clientes conectados
-// - tópicos
+type PublishStatus string
+
+const(
+	PublishStatusPublished             PublishStatus = "published"
+	PublishStatusDiscardedNoSubscribers PublishStatus = "discarded_no_subscribers"
+	PublishStatusQueueFull             PublishStatus = "topic_queue_full"
+	PublishStatusNotSubscribed         PublishStatus = "not_subscribed"
+)
 
 type Broker struct {
-
-	Clients map[*Client]bool
-
-	Topics map[string]*Topic
-
-	Mutex sync.RWMutex
+	Topics  map[string]*Topic
+	Clients map[string]*Client
+	Peers   map[string]*Peer
+	Mutex   sync.RWMutex
 }
 
 func NewBroker() *Broker {
-
 	return &Broker{
-		Clients: make(map[*Client]bool),
 		Topics:  make(map[string]*Topic),
+		Clients: make(map[string]*Client),
+		Peers:   make(map[string]*Peer),
 	}
 }
 
-// registra cliente conectado
-func (b *Broker) Register(client *Client) {
-
-	b.Mutex.Lock()
-	defer b.Mutex.Unlock()
-
-	b.Clients[client] = true
-
-	log.Println("cliente registrado:", client.ID)
-}
-
-// remove cliente conectado
-func (b *Broker) Unregister(client *Client) {
-
-	b.Mutex.Lock()
-	defer b.Mutex.Unlock()
-
-	delete(b.Clients, client)
-
-	// remove cliente de todos os tópicos
-	for topicName := range client.Topics {
-
-		if topic, exists := b.Topics[topicName]; exists {
-
-			delete(topic.Subscribers, client)
-
-			// remove tópico vazio
-			if len(topic.Subscribers) == 0 {
-				close(topic.Queue)
-				delete(b.Topics, topicName)
-
-				log.Println("tópico removido:", topicName)
-			}
-		}
-	}
-
-	close(client.Send)
-	close(client.Close)
-
-	log.Println("cliente removido:", client.ID)
-}
-
-// inscrição em tópico
-func (b *Broker) Subscribe(client *Client, topicName string) {
-
-	b.Mutex.Lock()
-	defer b.Mutex.Unlock()
-
-	// cria tópico dinamicamente
-	if _, exists := b.Topics[topicName]; !exists {
-
-		topic := &Topic{
-			Name:        topicName,
-			Subscribers: make(map[*Client]bool),
-			Queue:       make(chan protocol.Envelope, 100),
-		}
-
-		topic.StartWorker()
-
-		b.Topics[topicName] = topic
-
-		log.Println("tópico criado:", topicName)
-	}
-
-	topic := b.Topics[topicName]
-
-	topic.Subscribers[client] = true
-
-	client.Topics[topicName] = true
-
-	client.SendJSON(protocol.Envelope{
-		Type:  "ack",
-		Topic: topicName,
-	})
-}
-
-// remoção de inscrição
-func (b *Broker) Unsubscribe(client *Client, topicName string) {
-
-	b.Mutex.Lock()
-	defer b.Mutex.Unlock()
-
-	topic, exists := b.Topics[topicName]
+func (b *Broker) Publish(
+	topic string,
+	payload interface{},
+	publisher *Client,
+	// origin é o endereço do broker que originou a mensagem, 
+	// usado para evitar loops de replicação
+	origin string,
+) PublishStatus {
+	b.Mutex.RLock()
+	t, exists := b.Topics[topic]
 
 	if !exists {
-		return
+		b.Mutex.RUnlock()
+		log.Printf("[PUBSUB] tópico '%s' não existe: mensagem rejeitada", topic)
+		return PublishStatusDiscardedNoSubscribers
 	}
 
-	delete(topic.Subscribers, client)
-
-	delete(client.Topics, topicName)
-
-	// remove tópico vazio
-	if len(topic.Subscribers) == 0 {
-
-		close(topic.Queue)
-
-		delete(b.Topics, topicName)
-
-		log.Println("tópico removido:", topicName)
+	// Valida se o cliente que está publicando está inscrito no tópico
+	if publisher != nil && !t.Subscribers[publisher] {
+		b.Mutex.RUnlock()
+		log.Printf("[PUBSUB] cliente %s não está inscrito no tópico '%s': publicação rejeitada", publisher.ID, topic)
+		return PublishStatusNotSubscribed
 	}
 
-	client.SendJSON(protocol.Envelope{
-		Type:  "ack",
-		Topic: topicName,
-	})
+	if len(t.Subscribers) == 0 {
+		b.Mutex.RUnlock()
+		log.Printf("[PUBSUB] tópico '%s' não tem inscritos: mensagem descartada", topic)
+		return PublishStatusDiscardedNoSubscribers
+	}
+
+	envelop := protocol.Envelop{
+		Type:    "message",
+		Topic:   topic,
+		Payload: payload,
+	}
+
+	// envia para a fila do tópico
+	select {
+	case t.Queue <- envelop:
+		b.Mutex.RUnlock()
+		log.Printf("[PUBSUB] mensagem publicada no tópico '%s' para %d subscriber(s)", topic, len(t.Subscribers))
+	default:
+		b.Mutex.RUnlock()
+		log.Printf("[BACKPRESSURE] fila cheia no tópico '%s': mensagem rejeitada", topic)
+		return PublishStatusQueueFull
+	}
+
+	if origin != "" {
+		log.Printf("[FEDERATION] mensagem recebida de peer origem=%s", origin)
+	}
+
+	if len(b.Peers) > 0 {
+	// replica para outros brokers
+	data, _ := json.Marshal(envelop)
+	b.Forward(topic, data, origin)
+
+	
+	}
+	return PublishStatusPublished
+}
+func (b *Broker) Subscribe(
+	topic string,
+	client *Client,
+) {
+
+	b.Mutex.Lock()
+	defer b.Mutex.Unlock()
+
+	t, exists := b.Topics[topic]
+
+	if !exists {
+
+		t = NewTopic(topic, b)
+
+		b.Topics[topic] = t
+	}
+
+	t.Subscribers[client] = true
+
+	log.Println("cliente inscrito no tópico:", topic)
 }
 
-// publicação em tópico
-func (b *Broker) Publish(env protocol.Envelope) {
+func (b *Broker) Unsubscribe(
+	topic string,
+	client *Client,
+) {
 
-	b.Mutex.RLock()
-	defer b.Mutex.RUnlock()
+	b.Mutex.Lock()
+	defer b.Mutex.Unlock()
 
-	topic, exists := b.Topics[env.Topic]
+	t, exists := b.Topics[topic]
 
-	// descarta mensagem sem inscritos
-	if !exists || len(topic.Subscribers) == 0 {
-
-		log.Println("mensagem descartada sem inscritos:", env.Topic)
-
+	if !exists {
+		log.Println("Tópico não existe: mensagem ignorada")
 		return
 	}
 
-	// adiciona mensagem na fila do tópico
-	select {
-	case topic.Queue <- env:
-	default:
-		log.Println("fila do tópico cheia:", env.Topic)
-	}
+	delete(t.Subscribers, client)
+
+	log.Printf("[UNSUBSCRIBE] cliente %s removido do tópico '%s'", client.ID, topic)
+
+	if len(t.Subscribers) == 0 {
+		delete(b.Topics, topic)
+		close(t.Queue)
+
+		log.Printf("[TOPIC] tópico removido por falta de subscribers: %s", topic) }
 }

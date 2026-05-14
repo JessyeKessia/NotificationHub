@@ -1,66 +1,48 @@
 package main
 
-// importes necessárias para o funcionamento do servidor WebSocket,
 import (
 	"log"
 	"net/http"
-	// pacote Gorilla WebSocket para facilitar a implementação do servidor WebSocket
-	"github.com/gorilla/websocket"
+	"os"
+	"time"
+
+	"notificationhub/internal/broker"
 )
 
-// estrutura que representa um cliente conectado ao servidor WebSocket,
-// contendo um identificador único, a conexão WebSocket, um canal para enviar mensagens,
-// um mapa de tópicos aos quais o cliente está inscrito e um canal para sinalizar o fechamento da conexão
-var upgrader = websocket.Upgrader{
-	// permite conexoes
-	CheckOrigin: func(r *http.Request) bool {
-		// aceite conexão de QUALQUER origem
-		return true
-	},
-}
-
-// função que lida com as conexões WebSocket dos clientes,
-// atualizando a conexão para o protocolo WebSocket, 
-// lendo mensagens dos clientes e logando as mensagens recebidas
-func wsHandler(w http.ResponseWriter, r *http.Request) {
-
-	// pego a conexao do cliente e atualizo para o protocolo WebSocket
-	conn, err := upgrader.Upgrade(w, r, nil)
-
-	// se ocorrer algum erro durante a atualização,
-	// o erro retorna para o cliente
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	// garante que a conexão será fechada quando finalizar
-	defer conn.Close()
-
-	// confirma que um cliente se conectou
-	log.Println("Cliente conectado")
-
-	// ler as mensagens enviadas pelo cliente em um loop infinito,
-	for {
-		// pega a mensagem e o erro
-		_, msg, err := conn.ReadMessage()
-		// se tiver erro, sai do loop e fecha a conexao
-		if err != nil {
-			log.Println(err)
-			break
-		}
-		// printa as mensagens recebidas
-		log.Println(string(msg))
-	}
-}
-// avisa que o broker está rodando na porta 8080 e 
-// inicia o servidor HTTP para lidar com as conexões WebSocket dos clientes
 func main() {
+	b := broker.NewBroker()
 
-	// define rota /ws para lidar com as conexoes websocket
-	http.HandleFunc("/ws", wsHandler)
+	brokerID := os.Getenv("BROKER_ID")
+	if brokerID == "" {
+		brokerID = "broker-local"
+	}
 
-	log.Println("Broker rodando na porta 8080")
-	// escutando na porta 8080
-	http.ListenAndServe(":8080", nil)
+	peer := os.Getenv("PEER")
+
+	http.HandleFunc("/notificationhub", b.ServeWS)
+	http.HandleFunc("/federation", b.ServePeer)
+
+	log.Printf("[BROKER] id=%s iniciando na porta interna 8080", brokerID)
+	log.Printf("[BROKER] endpoint clientes: /notificationhub")
+	log.Printf("[BROKER] endpoint federação: /federation")
+
+	go func() {
+		if err := http.ListenAndServe(":8080", nil); err != nil {
+			log.Fatal("[BROKER] erro ao iniciar servidor:", err)
+		}
+	}()
+
+	// Espera curta para o servidor local subir antes de tentar conectar ao peer.
+	time.Sleep(2 * time.Second)
+
+	if peer != "" {
+		log.Printf("[FEDERATION] %s tentando conectar ao peer %s", brokerID, peer)
+
+		err := b.ConnectPeer(peer)
+		if err != nil {
+			log.Printf("[FEDERATION] %s não conseguiu conectar ao peer %s: %v", brokerID, peer, err)
+		}
+	}
+
+	select {}
 }

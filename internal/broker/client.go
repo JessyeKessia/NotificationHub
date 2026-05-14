@@ -2,10 +2,10 @@ package broker
 
 import (
 	"github.com/gorilla/websocket"
-	"encoding/json"
+	"time"
 	"log"
 	"notificationhub/internal/protocol"
-
+	"encoding/json"
 )
 
 // representa um cliente conectado ao broker
@@ -20,138 +20,207 @@ type Client struct {
 	// fila assíncrona de saída
 	Send chan []byte
 
-	// conjunto de topicos aos quais o cliente está inscrito
-	Topics map[string]bool
-
-	// referência ao broker para permitir interação com o broker
-	Broker *Broker
-
 	// sinalizador de fechamento do cliente
-	Close chan struct{}
+	LastPong time.Time
 }
-func (c *Client) ReadPump() {
 
-	// fecha conexão ao encerrar
-	defer c.Conn.Close()
+func (c *Client) readPump(b *Broker) {
+
+	defer func () {
+		b.Unregister(c)
+		c.Conn.Close()
+		
+	}()
+
+	c.Conn.SetPongHandler(func(string) error {
+
+		c.LastPong = time.Now()
+
+		return nil
+	})
 
 	for {
 
-		// le as mensagens websocket
 		_, message, err := c.Conn.ReadMessage()
 
-		// cliente desconectou
 		if err != nil {
-			log.Println("erro ao ler mensagem:", err)
+			log.Println("read error:", err)
 			break
 		}
 
-		// estrutura para armazenar a mensagem decodificada
 		var env protocol.Envelop
 
-		// converte json → struct go (objeto go) 
 		err = json.Unmarshal(message, &env)
 
-		// se tiver erro na conversão, manda mensagem de erro
 		if err != nil {
 
-			log.Println("json inválido:", err)
-
-			// envia erro padronizado
-			errorResponse := protocol.NewError("", "payload inválido", )
-
-			// converte struct go (objeto go) → json para enviar ao cliente
-			data, _ := json.Marshal(errorResponse)
-
-			// envia
-			c.Send <- data
-
-			continue
-		}
-
-		// valida mensagem de acordo com as regras de validação definidasd
-		err = protocol.ValidateEnvelop(env)
-
-		// erro de validacao
-		if err != nil {
-
-			log.Println("erro de validação:", err)
-
-			errorResponse := protocol.NewError(
+			c.SendError(
+				"invalid_json",
 				env.RequestID,
-				err.Error(),
 			)
 
-			data, _ := json.Marshal(errorResponse)
-
-			c.Send <- data
-
 			continue
 		}
 
-		// processa tipos do protocolo
 		switch env.Type {
+
+		case "subscribe":
+			if env.Topic == "" {
+				c.SendError("topic_required", env.RequestID)
+				continue
+			}
+
+			b.Subscribe(env.Topic, c)
+
+			c.SendAck(
+				"subscribed",
+				env.RequestID,
+			)
+		case "unsubscribe":
+			if env.Topic == "" {
+				c.SendError("topic_required", env.RequestID)
+				continue
+			}
+
+			b.Unsubscribe(env.Topic, c)
+
+			c.SendAck(
+				"unsubscribed",
+				env.RequestID,
+			)
 
 		case "publish":
 
-			log.Println(
-				"mensagem publicada no tópico:",
+			if env.Topic == "" {
+				c.SendError("topic_required", env.RequestID)
+				continue
+			}
+
+			if env.Payload == nil {
+				c.SendError("payload_required", env.RequestID)
+				continue
+			}
+
+			status := b.Publish(
 				env.Topic,
+				env.Payload,
+				c,
+				"",
 			)
 
-			log.Println("payload:", env.Payload)
+			switch status {
 
-			ack := protocol.NewAck(env.RequestID)
-
-			data, _ := json.Marshal(ack)
-
-			c.Send <- data
-
-		case "subscribe":
-
-			// adiciona tópico ao cliente
-			c.Topics[env.Topic] = true
-
-			log.Println(
-				"cliente inscrito no tópico:",
-				env.Topic,
-			)
-
-			ack := protocol.NewAck(env.RequestID)
-
-			data, _ := json.Marshal(ack)
-
-			c.Send <- data
-
-		case "unsubscribe":
-
-			// remove inscrição
-			delete(c.Topics, env.Topic)
-
-			log.Println(
-				"cliente removido do tópico:",
-				env.Topic,
-			)
-
-			ack := protocol.NewAck(env.RequestID)
-
-			data, _ := json.Marshal(ack)
-
-			c.Send <- data
-
+			case PublishStatusPublished:
+				c.SendAck(
+					"published",
+					env.RequestID,
+				)
+			case PublishStatusQueueFull:
+				c.SendError("topic_queue_full", env.RequestID)
+			case PublishStatusNotSubscribed:
+				c.SendError("not_subscribed", env.RequestID)
+			case PublishStatusDiscardedNoSubscribers:
+				c.SendError("discarded_no_subscribers", env.RequestID)
+			default: 
+				c.SendError("publish_failed", env.RequestID)
+			}
 		case "ping":
-
-			log.Println("ping recebido")
-
-		default:
-
-			errorResponse := protocol.NewError(
-				env.RequestID,
-				"tipo de mensagem desconhecido",
+			c.SendAck(
+				"pong",env.RequestID,
 			)
-
-			data, _ := json.Marshal(errorResponse)
-
-			c.Send <- data
+		default:
+			c.SendError("invalid_message_type", env.RequestID)
 		}
 	}
+}
+
+func (c *Client) writePump() {
+	ticker := time.NewTicker(30 * time.Second)
+
+	defer func() {
+		ticker.Stop()
+		c.Conn.Close()
+	}()
+
+	for {
+		select {
+
+		case msg, ok := <-c.Send:
+
+			if !ok {
+				log.Println("[CLIENT] canal de envio fechado:", c.ID)
+				return
+			}
+
+			if err := c.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				log.Println("[CLIENT] erro ao escrever mensagem:", err)
+				return
+			}
+
+		case <-ticker.C:
+
+			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Println("[CLIENT] erro ao enviar ping:", err)
+				return
+			}
+		}
+	}
+}
+
+func (c *Client) SendAck(
+	message string,
+	requestID string,
+) {
+
+	response := protocol.Envelop{
+		Type:      "ack",
+		Payload:   message,
+		RequestID: requestID,
+	}
+
+	data, _ := json.Marshal(response)
+
+	c.Send <- data
+}
+
+func (c *Client) SendError(
+	errMsg string,
+	requestID string,
+) {
+
+	response := protocol.Envelop{
+		Type:      "error",
+		Error:     errMsg,
+		RequestID: requestID,
+	}
+
+	data, _ := json.Marshal(response)
+
+	c.Send <- data
+}
+
+func (b * Broker) Unregister(client *Client) {
+	b.Mutex.Lock()
+	defer b.Mutex.Unlock()
+
+	delete(b.Clients, client.ID)
+
+	for topicName, topic := range b.Topics {
+		if _, exists := topic.Subscribers[client]; exists {
+			delete(topic.Subscribers, client)
+
+			log.Printf("[CLIENT] cliente %s removido do tópico '%s'", client.ID, topicName)
+
+			if len(topic.Subscribers) == 0 {
+				delete(b.Topics, topicName)
+				close(topic.Queue)
+
+				log.Printf("[TOPIC] tópico removido por desconexão do último subscriber: %s", topicName)
+			}
+		}
+	}
+
+	close(client.Send)
+
+	log.Printf("[CLIENT] cliente desconectado e removido: %s", client.ID)
 }
