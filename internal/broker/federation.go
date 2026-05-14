@@ -3,6 +3,7 @@ package broker
 import (
 	"encoding/json"
 	"log"
+	"time"
 
 	"notificationhub/internal/protocol"
 
@@ -10,34 +11,42 @@ import (
 )
 
 // conecta em outro broker do cluster
-func (b *Broker) ConnectPeer(
-	addr string,
-) error {
+func (b *Broker) ConnectPeer(addr string) error {
+	var lastErr error
 
-	conn, _, err := websocket.DefaultDialer.Dial(
-		addr,
-		nil,
-	)
+	for attempt := 1; attempt <= 10; attempt++ {
+		conn, _, err := websocket.DefaultDialer.Dial(addr, nil)
 
-	if err != nil {
-		return err
+		if err == nil {
+			peer := &Peer{
+				Addr: addr,
+				Conn: conn,
+			}
+
+			b.Mutex.Lock()
+			b.Peers[addr] = peer
+			b.Mutex.Unlock()
+
+			log.Println("[FEDERATION] peer conectado:", addr)
+
+			go b.listenPeer(peer)
+
+			return nil
+		}
+
+		lastErr = err
+
+		log.Printf(
+			"[FEDERATION] tentativa %d/10 falhou ao conectar peer %s: %v",
+			attempt,
+			addr,
+			err,
+		)
+
+		time.Sleep(2 * time.Second)
 	}
 
-	peer := &Peer{
-		Addr: addr,
-		Conn: conn,
-	}
-
-	b.Mutex.Lock()
-	b.Peers[addr] = peer
-	b.Mutex.Unlock()
-
-	log.Println("peer conectado:", addr)
-
-	// inicia escuta do peer
-	go b.listenPeer(peer)
-
-	return nil
+	return lastErr
 }
 
 // escuta mensagens vindas de outros brokers
@@ -51,7 +60,7 @@ func (b *Broker) listenPeer(
 
 		if err != nil {
 
-			log.Println("peer desconectado:", peer.Addr)
+			log.Println("[FEDERATION] peer desconectado:", peer.Addr)
 
 			b.Mutex.Lock()
 			delete(b.Peers, peer.Addr)
@@ -75,6 +84,7 @@ func (b *Broker) listenPeer(
 		b.Publish(
 			env.Topic,
 			env.Payload,
+			nil,
 			peer.Addr,
 		)
 	}

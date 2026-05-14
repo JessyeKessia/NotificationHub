@@ -2,8 +2,7 @@ package main
 
 import (
 	"log"
-	"os"
-	"os/signal"
+	"time"
 
 	"notificationhub/pkg/pubsub"
 )
@@ -14,11 +13,9 @@ func main() {
 		"ws://localhost:8082/notificationhub",
 		"ws://localhost:8083/notificationhub",
 	})
-
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer client.Close()
 
 	topics := []string{
@@ -32,20 +29,27 @@ func main() {
 		currentTopic := topic
 
 		err := client.Subscribe(currentTopic, func(msg pubsub.Message) {
-			log.Printf("[SUBSCRIBER] recebido topic='%s' payload='%v'", msg.Topic, msg.Payload)
+			log.Printf("[SUBSCRIBER] recebido topic=%s payload=%v", msg.Topic, msg.Payload)
 		})
-
 		if err != nil {
-			log.Println("[SUBSCRIBER] erro ao assinar tópico:", err)
+			log.Println("[TESTE] erro ao assinar:", err)
 		}
 	}
 
-	log.Println("[SUBSCRIBER] aguardando mensagens. Pressione Ctrl+C para sair.")
+	time.Sleep(1 * time.Second)
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
+	for _, topic := range topics {
+		err := client.Publish(topic, map[string]any{
+			"event": "teste de distribuição por hash",
+			"topic": topic,
+		})
 
-	<-stop
+		if err != nil {
+			log.Println("[TESTE] erro ao publicar:", err)
+		}
 
-	log.Println("[SUBSCRIBER] encerrando...")
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	time.Sleep(3 * time.Second)
 }
